@@ -23,6 +23,63 @@ STRUCTURE_FLAGS = fitz.TEXTFLAGS_XHTML | fitz.TEXT_COLLECT_STRUCTURE
 
 SKIP_TAGS = frozenset({"script", "style"})
 
+# Standard PDF 1.7 structure tags (ISO 32000-1) - content must be within these
+PDF_STRUCTURE_TAGS = frozenset(
+    {
+        # Root element
+        "document",
+        # Container elements
+        "part",
+        "sect",
+        "art",
+        "div",
+        # Paragraph and heading elements
+        "p",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        # List elements
+        "l",
+        "li",
+        "lbl",
+        "lbody",
+        # Table elements
+        "table",
+        "thead",
+        "tbody",
+        "tfoot",
+        "tr",
+        "th",
+        "td",
+        # Special inline elements
+        "span",
+        "quote",
+        "code",
+        "link",
+        "annot",
+        "form",
+        "ruby",
+        "rb",
+        "rt",
+        "rp",
+        # Special block elements
+        "figure",
+        "formula",
+        "index",
+        "toc",
+        "toci",
+        "caption",
+        "blockquote",
+        # Reference and note elements
+        "bibentry",
+        "reference",
+        "note",
+    }
+)
+
 
 class _TagTextParser(HTMLParser):
     """Walk XHTML fragments and emit (tag_path, tag, attrs, text) for text runs."""
@@ -58,7 +115,13 @@ class _TagTextParser(HTMLParser):
         text = data.strip()
         if not text:
             return
-        path = "/".join(name for name, _ in self._stack if name)
+        # Build path and check if content is part of semantic structure
+        path_tags = [name for name, _ in self._stack if name]
+        path = "/".join(path_tags)
+        # Only include text if it's part of the PDF structure tree
+        # (i.e., at least one tag in the stack is a standard PDF structure tag)
+        if not any(tag in PDF_STRUCTURE_TAGS for tag in path_tags):
+            return
         self.rows.append((path, leaf, dict(attrs), text))
 
     def error(self, message: str) -> None:

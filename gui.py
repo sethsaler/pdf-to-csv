@@ -53,15 +53,17 @@ class PdfExportApp:
         folder_row = ttk.Frame(main)
         folder_row.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
         folder_row.columnconfigure(1, weight=1)
-        ttk.Label(folder_row, text="Folder with PDFs").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(folder_row, text="Folder with PDFs").grid(
+            row=0, column=0, sticky="w", padx=(0, 8)
+        )
         folder_entry = ttk.Entry(folder_row, textvariable=self._folder_var)
         folder_entry.grid(row=0, column=1, sticky="ew")
-        ttk.Button(folder_row, text="Choose folder…", command=self._choose_pdf_folder).grid(
-            row=0, column=2, padx=(8, 0)
-        )
+        ttk.Button(
+            folder_row, text="Choose folder…", command=self._choose_pdf_folder
+        ).grid(row=0, column=2, padx=(8, 0))
         ttk.Label(
             main,
-            text="All .pdf files in that folder are loaded. Pick another folder anytime.",
+            text="All .pdf files in that folder are loaded. Only tagged content (structure tree) will be exported.",
             font=("TkDefaultFont", 10),
             foreground="gray30",
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 6))
@@ -89,9 +91,9 @@ class PdfExportApp:
         ttk.Button(btn_row, text="Add files…", command=self._add_files).pack(
             side=tk.LEFT, padx=(0, 6)
         )
-        ttk.Button(btn_row, text="Add PDFs from another folder…", command=self._append_folder).pack(
-            side=tk.LEFT, padx=(0, 6)
-        )
+        ttk.Button(
+            btn_row, text="Add PDFs from another folder…", command=self._append_folder
+        ).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(btn_row, text="Remove selected", command=self._remove_selected).pack(
             side=tk.LEFT, padx=(0, 6)
         )
@@ -100,7 +102,9 @@ class PdfExportApp:
         out_row = ttk.Frame(main)
         out_row.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         out_row.columnconfigure(1, weight=1)
-        ttk.Label(out_row, text="Output file").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(out_row, text="Output file").grid(
+            row=0, column=0, sticky="w", padx=(0, 8)
+        )
         self._output_var = tk.StringVar(value=str(Path.home() / "tagged_export.xlsx"))
         out_entry = ttk.Entry(out_row, textvariable=self._output_var)
         out_entry.grid(row=0, column=1, sticky="ew")
@@ -117,14 +121,16 @@ class PdfExportApp:
             ("csv", "CSV"),
             ("xlsx", "Excel (.xlsx)"),
         ):
-            ttk.Radiobutton(fmt_row, text=label, variable=self._fmt_var, value=val).pack(
-                side=tk.LEFT, padx=(0, 12)
-            )
+            ttk.Radiobutton(
+                fmt_row, text=label, variable=self._fmt_var, value=val
+            ).pack(side=tk.LEFT, padx=(0, 12))
 
-        ttk.Button(main, text="Export", command=self._export).grid(row=7, column=0, sticky="w")
+        ttk.Button(main, text="Export", command=self._export).grid(
+            row=7, column=0, sticky="w"
+        )
         self._status = ttk.Label(
             main,
-            text="Choose the folder that contains your PDFs, set the output file, then Export.",
+            text="Choose the folder that contains your PDFs, set the output file, then Export.\nOnly tagged content will be exported (untagged content is excluded).",
         )
         self._status.grid(row=8, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
@@ -197,7 +203,9 @@ class PdfExportApp:
             return
         self._paths = _dedupe_paths(self._paths + found)
         self._sync_listbox()
-        self._set_status(f"{len(self._paths)} file(s) total (added {len(found)} from second folder).")
+        self._set_status(
+            f"{len(self._paths)} file(s) total (added {len(found)} from second folder)."
+        )
 
     def _remove_selected(self) -> None:
         sel = list(self._list.curselection())
