@@ -189,9 +189,62 @@ def _write_xlsx(rows: list[dict[str, str | int]], path: Path) -> None:
     wb.save(path)
 
 
+def _resolve_output_format(output: Path, fmt: str) -> tuple[Path, str]:
+    """Normalize output path suffix and return (path, 'csv' | 'xlsx')."""
+    out = output.expanduser()
+    if fmt == "auto":
+        suf = out.suffix.lower()
+        if suf == ".csv":
+            resolved_fmt = "csv"
+        elif suf in (".xlsx", ".xlsm"):
+            resolved_fmt = "xlsx"
+        else:
+            resolved_fmt = "xlsx"
+            out = out.with_suffix(".xlsx")
+    elif fmt == "csv":
+        resolved_fmt = "csv"
+        if out.suffix.lower() != ".csv":
+            out = out.with_suffix(".csv")
+    else:
+        resolved_fmt = "xlsx"
+        if out.suffix.lower() not in (".xlsx", ".xlsm"):
+            out = out.with_suffix(".xlsx")
+    return out, resolved_fmt
+
+
+def export_pdfs(
+    pdf_paths: list[Path],
+    output: Path,
+    fmt: str = "auto",
+) -> tuple[int, Path]:
+    """
+    Extract tagged structure from PDFs and write CSV or Excel.
+
+    Returns (row_count, resolved_output_path).
+    """
+    out, kind = _resolve_output_format(output, fmt)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    all_rows: list[dict[str, str | int]] = []
+    for pdf in pdf_paths:
+        all_rows.extend(extract_rows(pdf))
+
+    if kind == "csv":
+        _write_csv(all_rows, out)
+    else:
+        _write_xlsx(all_rows, out)
+
+    return len(all_rows), out
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         description="Export tagged PDF structure (tags + text) to CSV or Excel."
+    )
+    p.add_argument(
+        "--gui",
+        action="store_true",
+        help="Open a window to pick PDFs/folders and an output file.",
     )
     p.add_argument(
         "pdfs",
@@ -209,8 +262,8 @@ def main(argv: list[str] | None = None) -> int:
         "-o",
         "--output",
         type=Path,
-        required=True,
-        help="Output file (.csv or .xlsx)",
+        default=None,
+        help="Output file (.csv or .xlsx). Not required with --gui.",
     )
     p.add_argument(
         "--format",
@@ -220,38 +273,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = p.parse_args(argv)
 
+    if args.gui:
+        from gui import main as gui_main
+
+        gui_main()
+        return 0
+
+    if args.output is None:
+        p.error("the following arguments are required: -o/--output")
+
     pdf_list = list(_iter_pdf_paths(list(args.pdfs), args.from_dir))
     if not pdf_list:
         print("No PDF files found.", file=sys.stderr)
         return 2
 
-    all_rows: list[dict[str, str | int]] = []
-    for pdf in pdf_list:
-        all_rows.extend(extract_rows(pdf))
-
-    out = args.output.expanduser()
-    fmt = args.format
-    if fmt == "auto":
-        suf = out.suffix.lower()
-        if suf == ".csv":
-            fmt = "csv"
-        elif suf in (".xlsx", ".xlsm"):
-            fmt = "xlsx"
-        else:
-            fmt = "xlsx"
-            out = out.with_suffix(".xlsx")
-
-    out.parent.mkdir(parents=True, exist_ok=True)
-    if fmt == "csv":
-        if out.suffix.lower() != ".csv":
-            out = out.with_suffix(".csv")
-        _write_csv(all_rows, out)
-    else:
-        if out.suffix.lower() not in (".xlsx", ".xlsm"):
-            out = out.with_suffix(".xlsx")
-        _write_xlsx(all_rows, out)
-
-    print(f"Wrote {len(all_rows)} row(s) to {out}")
+    n, out = export_pdfs(pdf_list, args.output, args.format)
+    print(f"Wrote {n} row(s) to {out}")
     return 0
 
 
