@@ -1,13 +1,12 @@
 #!/bin/bash
-# Double-click this file in Finder to install (if needed) and run the extractor.
-# Place PDFs in a folder named "pdfs" next to this script, or edit PDF_DIR below.
+# Double-click in Finder: install dependencies if needed, then open the PDF folder GUI.
+#
+# Unattended batch (old behavior): export every PDF in ./pdfs to ./tagged_export.xlsx
+#   BATCH=1 "/path/to/Run PDF tag extraction.command"
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
-
-PDF_DIR="${PDF_DIR:-$ROOT/pdfs}"
-OUT="${OUT:-$ROOT/tagged_export.xlsx}"
 
 if [[ ! -d .venv ]]; then
   bash "$ROOT/scripts/install.sh"
@@ -17,8 +16,29 @@ if [[ -f "$ROOT/.venv/bin/python" ]]; then
   PY="$ROOT/.venv/bin/python"
 fi
 
-mkdir -p "$PDF_DIR"
-"$PY" "$ROOT/extract_tagged_pdf.py" --from-dir "$PDF_DIR" -o "$OUT" --format xlsx
-echo "Output: $OUT"
+if [[ "${BATCH:-}" == "1" ]]; then
+  PDF_DIR="${PDF_DIR:-$ROOT/pdfs}"
+  OUT="${OUT:-$ROOT/tagged_export.xlsx}"
+  mkdir -p "$PDF_DIR"
+  set +e
+  "$PY" "$ROOT/extract_tagged_pdf.py" --from-dir "$PDF_DIR" -o "$OUT" --format xlsx
+  ec=$?
+  set -e
+  if [[ $ec -eq 0 ]]; then
+    echo "Output: $OUT"
+  else
+    echo "extract_tagged_pdf.py exited with status $ec." >&2
+  fi
+else
+  set +e
+  "$PY" "$ROOT/extract_tagged_pdf.py" --gui
+  ec=$?
+  set -e
+  if [[ $ec -ne 0 ]]; then
+    echo "Application exited with status $ec." >&2
+  fi
+fi
+
+echo ""
 echo "Press Enter to close."
 read -r _

@@ -48,7 +48,7 @@ class PdfExportApp:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main.columnconfigure(0, weight=1)
-        main.rowconfigure(2, weight=1)
+        main.rowconfigure(3, weight=1)
 
         folder_row = ttk.Frame(main)
         folder_row.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
