@@ -23,6 +23,28 @@ STRUCTURE_FLAGS = fitz.TEXTFLAGS_XHTML | fitz.TEXT_COLLECT_STRUCTURE
 
 SKIP_TAGS = frozenset({"script", "style"})
 
+# Block-level structure tags: a new export "paragraph" / logical block starts here.
+# Nested spans inside the same block share one id (see _TagTextParser).
+PARAGRAPH_BLOCK_TAGS = frozenset(
+    {
+        "p",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "th",
+        "td",
+        "li",
+        "lbody",
+        "caption",
+        "blockquote",
+        "note",
+        "toci",
+    }
+)
+
 # Standard PDF 1.7 structure tags (ISO 32000-1) - content must be within these
 PDF_STRUCTURE_TAGS = frozenset(
     {
@@ -82,21 +104,28 @@ PDF_STRUCTURE_TAGS = frozenset(
 
 
 class _TagTextParser(HTMLParser):
-    """Walk XHTML fragments and emit (tag_path, tag, attrs, text) for text runs."""
+    """Walk XHTML fragments and emit rows for text runs."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        # (tag_name, attrs) — empty tag name means skip (e.g. script/style body)
-        self._stack: list[tuple[str, dict[str, str]]] = []
-        self.rows: list[tuple[str, str, dict[str, str], str]] = []
+        # (tag_name, attrs, block_uid) — empty tag name means skip (e.g. script/style)
+        self._stack: list[tuple[str, dict[str, str], int]] = []
+        self._next_block_uid = 1
+        self.rows: list[tuple[str, str, dict[str, str], str, int]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         t = tag.lower()
         if t in SKIP_TAGS:
-            self._stack.append(("", {}))
+            self._stack.append(("", {}, 0))
             return
         ad: dict[str, str] = {k: v if v is not None else "" for k, v in attrs}
-        self._stack.append((t, ad))
+        parent_uid = self._stack[-1][2] if self._stack else 0
+        if t in PARAGRAPH_BLOCK_TAGS:
+            uid = self._next_block_uid
+            self._next_block_uid += 1
+        else:
+            uid = parent_uid
+        self._stack.append((t, ad, uid))
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.handle_starttag(tag, attrs)
@@ -109,30 +138,93 @@ class _TagTextParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if not self._stack:
             return
-        leaf, attrs = self._stack[-1]
+        leaf, attrs, block_uid = self._stack[-1]
         if not leaf:
             return
         text = data.strip()
         if not text:
             return
         # Build path and check if content is part of semantic structure
-        path_tags = [name for name, _ in self._stack if name]
+        path_tags = [name for name, _, _ in self._stack if name]
         path = "/".join(path_tags)
         # Only include text if it's part of the PDF structure tree
         # (i.e., at least one tag in the stack is a standard PDF structure tag)
         if not any(tag in PDF_STRUCTURE_TAGS for tag in path_tags):
             return
-        self.rows.append((path, leaf, dict(attrs), text))
+        self.rows.append((path, leaf, dict(attrs), text, block_uid))
 
     def error(self, message: str) -> None:
         raise RuntimeError(message)
 
 
-def _parse_xhtml_fragment(xhtml: str) -> list[tuple[str, str, dict[str, str], str]]:
+def _parse_xhtml_fragment(xhtml: str) -> list[tuple[str, str, dict[str, str], str, int]]:
     parser = _TagTextParser()
     parser.feed(xhtml)
     parser.close()
     return parser.rows
+
+
+def _document_has_struct_tree(doc: fitz.Document) -> bool:
+    """True if the PDF catalog has /StructTreeRoot (real tagging, e.g. from Acrobat)."""
+    if not doc.is_pdf or doc.is_closed:
+        return False
+    try:
+        cat = doc.pdf_catalog()
+        t, val = doc.xref_get_key(cat, "StructTreeRoot")
+    except Exception:
+        return False
+    return t != "null" and val != "null"
+
+
+def _merge_paragraph_rows(
+    rows: list[dict[str, str | int]],
+) -> list[dict[str, str | int]]:
+    """Join consecutive text runs that belong to the same logical block (same paragraph_index)."""
+    if not rows:
+        return rows
+    keyfn = lambda r: (r.get("page", 0), r.get("paragraph_index", 0))
+    merged: list[dict[str, str | int]] = []
+    group_key = keyfn(rows[0])
+    chunk: list[dict[str, str | int]] = [rows[0]]
+    for r in rows[1:]:
+        k = keyfn(r)
+        if k == group_key and r.get("error") == "" and chunk[-1].get("error") == "":
+            chunk.append(r)
+        else:
+            merged.append(_combine_chunk(chunk))
+            chunk = [r]
+            group_key = k
+    merged.append(_combine_chunk(chunk))
+    return merged
+
+
+def _combine_chunk(chunk: list[dict[str, str | int]]) -> dict[str, str | int]:
+    if len(chunk) == 1:
+        base = dict(chunk[0])
+        base.pop("paragraph_index", None)
+        return base
+    texts: list[str] = []
+    attrs_parts: list[dict[str, str]] = []
+    for r in chunk:
+        t = str(r.get("text", "")).strip()
+        if t:
+            texts.append(t)
+        aj = r.get("attributes_json", "")
+        if aj:
+            try:
+                attrs_parts.append(json.loads(str(aj)))
+            except json.JSONDecodeError:
+                pass
+    merged_attrs: dict[str, str] = {}
+    for d in attrs_parts:
+        merged_attrs.update(d)
+    base = dict(chunk[0])
+    base["text"] = " ".join(texts)
+    base["attributes_json"] = (
+        json.dumps(merged_attrs, ensure_ascii=False) if merged_attrs else ""
+    )
+    base.pop("paragraph_index", None)
+    return base
 
 
 def _iter_pdf_paths(paths: list[Path], from_dir: Path | None) -> Iterator[Path]:
@@ -158,7 +250,11 @@ def _iter_pdf_paths(paths: list[Path], from_dir: Path | None) -> Iterator[Path]:
                 yield p
 
 
-def extract_rows(pdf_path: Path) -> list[dict[str, str | int]]:
+def extract_rows(
+    pdf_path: Path,
+    *,
+    include_layout_paragraphs: bool = False,
+) -> list[dict[str, str | int]]:
     out: list[dict[str, str | int]] = []
     try:
         doc = fitz.open(pdf_path)
@@ -177,6 +273,27 @@ def extract_rows(pdf_path: Path) -> list[dict[str, str | int]]:
         return out
 
     try:
+        has_struct = _document_has_struct_tree(doc)
+        if not has_struct and not include_layout_paragraphs:
+            out.append(
+                {
+                    "source_pdf": str(pdf_path.resolve()),
+                    "page": 0,
+                    "tag_path": "",
+                    "tag": "",
+                    "text": "",
+                    "attributes_json": "",
+                    "error": (
+                        "No PDF structure tree (/StructTreeRoot): this file is not tagged "
+                        "in Acrobat (or tags were removed). Nothing exported. "
+                        "Re-save with tags from Acrobat, or pass "
+                        "--include-layout-paragraphs to export MuPDF layout blocks "
+                        "(not the same as Acrobat metadata)."
+                    ),
+                }
+            )
+            return out
+
         for i in range(doc.page_count):
             page = doc[i]
             try:
@@ -194,7 +311,7 @@ def extract_rows(pdf_path: Path) -> list[dict[str, str | int]]:
                     }
                 )
                 continue
-            for path, tag, attrs, text in _parse_xhtml_fragment(xhtml):
+            for path, tag, attrs, text, block_uid in _parse_xhtml_fragment(xhtml):
                 out.append(
                     {
                         "source_pdf": str(pdf_path.resolve()),
@@ -205,6 +322,7 @@ def extract_rows(pdf_path: Path) -> list[dict[str, str | int]]:
                         "attributes_json": json.dumps(attrs, ensure_ascii=False)
                         if attrs
                         else "",
+                        "paragraph_index": block_uid,
                         "error": "",
                     }
                 )
@@ -279,9 +397,16 @@ def export_pdfs(
     pdf_paths: list[Path],
     output: Path,
     fmt: str = "auto",
+    *,
+    include_layout_paragraphs: bool = False,
+    paragraph_rows: bool = False,
 ) -> tuple[int, Path]:
     """
     Extract tagged structure from PDFs and write CSV or Excel.
+
+    By default only PDFs with a real /StructTreeRoot (Acrobat-style tagging) are
+    exported. Set include_layout_paragraphs=True to also export MuPDF's synthetic
+    layout blocks for untagged files.
 
     Returns (row_count, resolved_output_path).
     """
@@ -290,7 +415,15 @@ def export_pdfs(
 
     all_rows: list[dict[str, str | int]] = []
     for pdf in pdf_paths:
-        all_rows.extend(extract_rows(pdf))
+        all_rows.extend(
+            extract_rows(pdf, include_layout_paragraphs=include_layout_paragraphs)
+        )
+
+    if paragraph_rows:
+        all_rows = _merge_paragraph_rows(all_rows)
+    else:
+        for r in all_rows:
+            r.pop("paragraph_index", None)
 
     if kind == "csv":
         _write_csv(all_rows, out)
@@ -334,6 +467,19 @@ def main(argv: list[str] | None = None) -> int:
         default="auto",
         help="Output format (default: from file extension)",
     )
+    p.add_argument(
+        "--include-layout-paragraphs",
+        action="store_true",
+        help=(
+            "Also export untagged PDFs using MuPDF layout <p> blocks (not Acrobat "
+            "metadata). Default: only export when /StructTreeRoot exists."
+        ),
+    )
+    p.add_argument(
+        "--paragraph-rows",
+        action="store_true",
+        help="Merge text runs that belong to the same logical block into one row.",
+    )
     args = p.parse_args(argv)
 
     if args.gui:
@@ -350,7 +496,13 @@ def main(argv: list[str] | None = None) -> int:
         print("No PDF files found.", file=sys.stderr)
         return 2
 
-    n, out = export_pdfs(pdf_list, args.output, args.format)
+    n, out = export_pdfs(
+        pdf_list,
+        args.output,
+        args.format,
+        include_layout_paragraphs=args.include_layout_paragraphs,
+        paragraph_rows=args.paragraph_rows,
+    )
     print(f"Wrote {n} row(s) to {out}")
     return 0
 
