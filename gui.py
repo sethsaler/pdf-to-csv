@@ -63,7 +63,10 @@ class PdfExportApp:
         ).grid(row=0, column=2, padx=(8, 0))
         ttk.Label(
             main,
-            text="All .pdf files in that folder are loaded. Only tagged content (structure tree) will be exported.",
+            text=(
+                "All .pdf files in that folder are loaded. "
+                "Exports require a real PDF tag tree unless you check layout paragraphs below."
+            ),
             font=("TkDefaultFont", 10),
             foreground="gray30",
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 6))
@@ -125,14 +128,33 @@ class PdfExportApp:
                 fmt_row, text=label, variable=self._fmt_var, value=val
             ).pack(side=tk.LEFT, padx=(0, 12))
 
+        opt_row = ttk.Frame(main)
+        opt_row.grid(row=7, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        self._layout_paragraphs_var = tk.BooleanVar(value=False)
+        self._paragraph_rows_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            opt_row,
+            text='Include layout-only "paragraphs" for untagged PDFs (not Acrobat tags)',
+            variable=self._layout_paragraphs_var,
+        ).pack(anchor="w")
+        ttk.Checkbutton(
+            opt_row,
+            text="One row per logical block (merge runs inside the same paragraph)",
+            variable=self._paragraph_rows_var,
+        ).pack(anchor="w")
+
         ttk.Button(main, text="Export", command=self._export).grid(
-            row=7, column=0, sticky="w"
+            row=8, column=0, sticky="w"
         )
         self._status = ttk.Label(
             main,
-            text="Choose the folder that contains your PDFs, set the output file, then Export.\nOnly tagged content will be exported (untagged content is excluded).",
+            text=(
+                "Tagged PDFs (Acrobat / ISO structure tree) export by default. "
+                "Untagged files produce an error row unless you enable layout paragraphs.\n"
+                'Use "one row per logical block" for whole paragraphs instead of each styled run.'
+            ),
         )
-        self._status.grid(row=8, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        self._status.grid(row=9, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
         folder_entry.bind("<Return>", lambda e: self._load_folder_from_entry())
 
@@ -251,7 +273,13 @@ class PdfExportApp:
             return
         fmt = self._fmt_var.get()
         try:
-            n, written = export_pdfs(self._paths, out, fmt)
+            n, written = export_pdfs(
+                self._paths,
+                out,
+                fmt,
+                include_layout_paragraphs=self._layout_paragraphs_var.get(),
+                paragraph_rows=self._paragraph_rows_var.get(),
+            )
         except Exception as exc:
             messagebox.showerror("Export failed", str(exc))
             self._set_status("Export failed.")

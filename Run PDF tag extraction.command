@@ -21,7 +21,9 @@ if [[ "${BATCH:-}" == "1" ]]; then
   OUT="${OUT:-$ROOT/tagged_export.xlsx}"
   mkdir -p "$PDF_DIR"
   set +e
-  "$PY" "$ROOT/extract_tagged_pdf.py" --from-dir "$PDF_DIR" -o "$OUT" --format xlsx
+  # Keep batch exports working for folders that mix tagged and plain PDFs.
+  "$PY" "$ROOT/extract_tagged_pdf.py" --from-dir "$PDF_DIR" -o "$OUT" --format xlsx \
+    --include-layout-paragraphs
   ec=$?
   set -e
   if [[ $ec -eq 0 ]]; then
