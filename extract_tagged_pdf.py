@@ -4,6 +4,9 @@ Extract PDF structure tags (tagged PDF / structure tree) into tabular form.
 
 Uses PyMuPDF with structure collection enabled and parses the semantic XHTML
 per page into rows: tag hierarchy, local tag name, text, and attributes.
+
+Text comes from the PDF’s embedded character data only (no OCR). Scanned
+pages that are image-only have no extractable text unless you OCR them elsewhere.
 """
 
 from __future__ import annotations
