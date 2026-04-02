@@ -131,7 +131,8 @@ class PdfExportApp:
         opt_row = ttk.Frame(main)
         opt_row.grid(row=7, column=0, columnspan=2, sticky="w", pady=(0, 8))
         self._layout_paragraphs_var = tk.BooleanVar(value=False)
-        self._paragraph_rows_var = tk.BooleanVar(value=False)
+        self._paragraph_rows_var = tk.BooleanVar(value=True)
+        self._cid_unicode_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             opt_row,
             text='Include layout-only "paragraphs" for untagged PDFs (not Acrobat tags)',
@@ -139,8 +140,16 @@ class PdfExportApp:
         ).pack(anchor="w")
         ttk.Checkbutton(
             opt_row,
-            text="One row per logical block (merge runs inside the same paragraph)",
+            text="One row per logical block (merge runs inside the same paragraph; recommended)",
             variable=self._paragraph_rows_var,
+        ).pack(anchor="w")
+        ttk.Checkbutton(
+            opt_row,
+            text=(
+                "MuPDF: guess Unicode from glyph IDs for unmapped fonts (often wrong; "
+                "leave off unless you know you need it)"
+            ),
+            variable=self._cid_unicode_var,
         ).pack(anchor="w")
 
         ttk.Button(main, text="Export", command=self._export).grid(
@@ -279,6 +288,7 @@ class PdfExportApp:
                 fmt,
                 include_layout_paragraphs=self._layout_paragraphs_var.get(),
                 paragraph_rows=self._paragraph_rows_var.get(),
+                cid_for_unknown_unicode=self._cid_unicode_var.get(),
             )
         except Exception as exc:
             messagebox.showerror("Export failed", str(exc))

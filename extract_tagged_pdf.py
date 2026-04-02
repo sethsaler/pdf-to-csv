@@ -7,6 +7,12 @@ per page into rows: tag hierarchy, local tag name, text, and attributes.
 
 Text comes from the PDF’s embedded character data only (no OCR). Scanned
 pages that are image-only have no extractable text unless you OCR them elsewhere.
+
+MuPDF’s default XHTML flags include TEXT_CID_FOR_UNKNOWN_UNICODE: when a font
+lacks a proper ToUnicode mapping, glyph IDs are misinterpreted as Unicode code
+points. That often looks like random letters (similar to bad OCR) even though
+nothing is OCR’d. This tool turns that off by default; use
+--cid-for-unknown-unicode to restore MuPDF’s legacy behavior.
 """
 
 from __future__ import annotations
@@ -22,7 +28,18 @@ from pathlib import Path
 import fitz
 
 
-STRUCTURE_FLAGS = fitz.TEXTFLAGS_XHTML | fitz.TEXT_COLLECT_STRUCTURE
+def _structure_text_flags(*, cid_for_unknown_unicode: bool = False) -> int:
+    """
+    Flags for page.get_text("xhtml") with structure collection.
+
+    TEXTFLAGS_XHTML normally includes TEXT_CID_FOR_UNKNOWN_UNICODE; clearing it
+    avoids fake Unicode from raw glyph indices (a common source of garbled
+    extraction on subset or custom-encoded fonts).
+    """
+    flags = fitz.TEXTFLAGS_XHTML | fitz.TEXT_COLLECT_STRUCTURE
+    if not cid_for_unknown_unicode:
+        flags &= ~fitz.TEXT_CID_FOR_UNKNOWN_UNICODE
+    return flags
 
 SKIP_TAGS = frozenset({"script", "style"})
 
@@ -115,8 +132,32 @@ class _TagTextParser(HTMLParser):
         self._stack: list[tuple[str, dict[str, str], int]] = []
         self._next_block_uid = 1
         self.rows: list[tuple[str, str, dict[str, str], str, int]] = []
+        # HTMLParser may split one text node into multiple handle_data calls; buffer
+        # until a tag boundary so we emit a single run (avoids garbled / split words).
+        self._char_buffer: str = ""
+
+    def _flush_char_buffer(self) -> None:
+        if not self._char_buffer:
+            return
+        if not self._stack:
+            self._char_buffer = ""
+            return
+        leaf, attrs, block_uid = self._stack[-1]
+        data = self._char_buffer
+        self._char_buffer = ""
+        if not leaf:
+            return
+        text = data.strip()
+        if not text:
+            return
+        path_tags = [name for name, _, _ in self._stack if name]
+        path = "/".join(path_tags)
+        if not any(tag in PDF_STRUCTURE_TAGS for tag in path_tags):
+            return
+        self.rows.append((path, leaf, dict(attrs), text, block_uid))
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._flush_char_buffer()
         t = tag.lower()
         if t in SKIP_TAGS:
             self._stack.append(("", {}, 0))
@@ -135,26 +176,21 @@ class _TagTextParser(HTMLParser):
         self.handle_endtag(tag)
 
     def handle_endtag(self, tag: str) -> None:
+        self._flush_char_buffer()
         if self._stack:
             self._stack.pop()
 
     def handle_data(self, data: str) -> None:
         if not self._stack:
             return
-        leaf, attrs, block_uid = self._stack[-1]
+        leaf, _, _ = self._stack[-1]
         if not leaf:
             return
-        text = data.strip()
-        if not text:
-            return
-        # Build path and check if content is part of semantic structure
-        path_tags = [name for name, _, _ in self._stack if name]
-        path = "/".join(path_tags)
-        # Only include text if it's part of the PDF structure tree
-        # (i.e., at least one tag in the stack is a standard PDF structure tag)
-        if not any(tag in PDF_STRUCTURE_TAGS for tag in path_tags):
-            return
-        self.rows.append((path, leaf, dict(attrs), text, block_uid))
+        self._char_buffer += data
+
+    def close(self) -> None:
+        self._flush_char_buffer()
+        super().close()
 
     def error(self, message: str) -> None:
         raise RuntimeError(message)
@@ -209,9 +245,7 @@ def _combine_chunk(chunk: list[dict[str, str | int]]) -> dict[str, str | int]:
     texts: list[str] = []
     attrs_parts: list[dict[str, str]] = []
     for r in chunk:
-        t = str(r.get("text", "")).strip()
-        if t:
-            texts.append(t)
+        texts.append(str(r.get("text", "")))
         aj = r.get("attributes_json", "")
         if aj:
             try:
@@ -222,7 +256,8 @@ def _combine_chunk(chunk: list[dict[str, str | int]]) -> dict[str, str | int]:
     for d in attrs_parts:
         merged_attrs.update(d)
     base = dict(chunk[0])
-    base["text"] = " ".join(texts)
+    # Concatenate runs; PDF text usually already includes spaces where needed.
+    base["text"] = "".join(texts).strip()
     base["attributes_json"] = (
         json.dumps(merged_attrs, ensure_ascii=False) if merged_attrs else ""
     )
@@ -257,6 +292,7 @@ def extract_rows(
     pdf_path: Path,
     *,
     include_layout_paragraphs: bool = False,
+    cid_for_unknown_unicode: bool = False,
 ) -> list[dict[str, str | int]]:
     out: list[dict[str, str | int]] = []
     try:
@@ -297,10 +333,11 @@ def extract_rows(
             )
             return out
 
+        text_flags = _structure_text_flags(cid_for_unknown_unicode=cid_for_unknown_unicode)
         for i in range(doc.page_count):
             page = doc[i]
             try:
-                xhtml = page.get_text("xhtml", flags=STRUCTURE_FLAGS)
+                xhtml = page.get_text("xhtml", flags=text_flags)
             except Exception as exc:
                 out.append(
                     {
@@ -402,7 +439,8 @@ def export_pdfs(
     fmt: str = "auto",
     *,
     include_layout_paragraphs: bool = False,
-    paragraph_rows: bool = False,
+    paragraph_rows: bool = True,
+    cid_for_unknown_unicode: bool = False,
 ) -> tuple[int, Path]:
     """
     Extract tagged structure from PDFs and write CSV or Excel.
@@ -410,6 +448,10 @@ def export_pdfs(
     By default only PDFs with a real /StructTreeRoot (Acrobat-style tagging) are
     exported. Set include_layout_paragraphs=True to also export MuPDF's synthetic
     layout blocks for untagged files.
+
+    cid_for_unknown_unicode: pass True to use MuPDF's default glyph-as-Unicode
+    fallback (can look like OCR errors). Default False matches TEXTFLAGS_XHTML
+    with that bit cleared.
 
     Returns (row_count, resolved_output_path).
     """
@@ -419,7 +461,11 @@ def export_pdfs(
     all_rows: list[dict[str, str | int]] = []
     for pdf in pdf_paths:
         all_rows.extend(
-            extract_rows(pdf, include_layout_paragraphs=include_layout_paragraphs)
+            extract_rows(
+                pdf,
+                include_layout_paragraphs=include_layout_paragraphs,
+                cid_for_unknown_unicode=cid_for_unknown_unicode,
+            )
         )
 
     if paragraph_rows:
@@ -480,8 +526,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--paragraph-rows",
-        action="store_true",
-        help="Merge text runs that belong to the same logical block into one row.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Merge text runs that belong to the same logical block into one row "
+            "(default: on). Use --no-paragraph-rows for one row per styled run."
+        ),
+    )
+    p.add_argument(
+        "--cid-for-unknown-unicode",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "MuPDF default: treat unknown glyph IDs as Unicode (often wrong, OCR-like). "
+            "Default: off — use font/ToUnicode mapping or replacement characters instead."
+        ),
     )
     args = p.parse_args(argv)
 
@@ -505,6 +564,7 @@ def main(argv: list[str] | None = None) -> int:
         args.format,
         include_layout_paragraphs=args.include_layout_paragraphs,
         paragraph_rows=args.paragraph_rows,
+        cid_for_unknown_unicode=args.cid_for_unknown_unicode,
     )
     print(f"Wrote {n} row(s) to {out}")
     return 0
